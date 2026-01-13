@@ -1,0 +1,28 @@
+# Build directories
+build/
+bin/
+obj/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Compiled binaries
+*.exe
+*.dll
+*.so
+*.dylib
+*.a
+*.lib
+
+# Specific to this project
+# Do NOT ignore Release/ folder as it contains the required exe files
+!Release/
+!Release/*.exe
+
+# Old project structure (now moved to steadywin_connect)
+# These should be empty but keeping rules for safety during transition
+src/*.cpp
+include/steadywin/*.h

@@ -9,7 +9,7 @@
 
 ![Interface](docs/program%20interface.png)
 
-## 🏗 Architecture
+## Architecture
 
 The project is organized into the `steadywin_connect` directory, structured by layers:
 
@@ -35,14 +35,14 @@ All public header files are located here.
 
 ---
 
-## 📖 Documentation
+## Documentation
 
 *   [**User Manual**](docs/usage_manual.md) - Detailed guide on how to use the software and hardware connection.
 *   [CAN Protocol](docs/CAN_steadywin_protocol_v302.md) - Official CAN protocol specification.
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
 
 ### Prerequisites
 *   Windows 10/11

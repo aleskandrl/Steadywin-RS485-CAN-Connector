@@ -1,6 +1,6 @@
 #pragma once
 
-#include "steadywin/serial_port_interface.h"
+#include "steadywin/hal/serial_port_interface.h"
 #include <windows.h>
 #include <string>
 
@@ -19,7 +19,7 @@ public:
     void close() override;
     bool isOpen() const override;
     long long write(const std::vector<uint8_t>& data) override;
-    long long read(std::vector<uint8_t>& buffer, unsigned int timeout_ms) override;
+    long long read(std::vector<uint8_t>& buffer, unsigned int timeout_ms, size_t max_bytes = 0) override;
 
 private:
     HANDLE hSerial_{INVALID_HANDLE_VALUE};

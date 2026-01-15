@@ -1,4 +1,4 @@
-#include "steadywin/gs_usb_can_port.h"
+#include "steadywin/hal/gs_usb_can_port.h"
 #include <iostream>
 #include <iomanip>
 #include <mutex>
@@ -6,7 +6,7 @@
 #include <vector>
 #include <string>
 #include <cstdint>
-#include <cstring> // <--- Добавлено для memcpy
+#include <cstring>
 
 #if defined(WIN32) || defined(_WIN32) || defined(__WIN32__)
 #include <windows.h>
@@ -14,8 +14,6 @@
 #include <usbiodef.h>
 #include <setupapi.h>
 
-// Standard GUID for WinUSB (Zadig)
-// {dee824ef-729b-4a0e-9c14-b7117d33a817}
 DEFINE_GUID(GUID_DEVINTERFACE_WINUSB, 
     0xdee824ef, 0x729b, 0x4a0e, 0x9c, 0x14, 0xb7, 0x11, 0x7d, 0x33, 0xa8, 0x17);
 
@@ -23,7 +21,7 @@ namespace steadywin {
 
 static std::recursive_mutex g_usb_mutex;
 
-GsUsbCanPort::GsUsbCanPort() : is_open_(false) {}
+GsUsbCanPort::GsUsbCanPort() : is_open_(false), device_handle_(INVALID_HANDLE_VALUE), usb_handle_(NULL) {}
 
 GsUsbCanPort::~GsUsbCanPort() {
     close();
@@ -32,6 +30,8 @@ GsUsbCanPort::~GsUsbCanPort() {
 bool GsUsbCanPort::open(const char* device_path, unsigned int baud_rate) {
     std::lock_guard<std::recursive_mutex> lock(g_usb_mutex);
     
+    std::cout << "Opening GS_USB device: " << (device_path ? device_path : "NULL") << std::endl;
+
     device_handle_ = CreateFileA(device_path,
                                 GENERIC_READ | GENERIC_WRITE,
                                 FILE_SHARE_READ | FILE_SHARE_WRITE,
@@ -41,10 +41,13 @@ bool GsUsbCanPort::open(const char* device_path, unsigned int baud_rate) {
                                 NULL);
 
     if (device_handle_ == INVALID_HANDLE_VALUE) {
+        DWORD err = GetLastError();
+        std::cerr << "CreateFile failed with error: " << err << std::endl;
         return false;
     }
 
     if (!WinUsb_Initialize(device_handle_, &usb_handle_)) {
+        std::cerr << "WinUsb_Initialize failed with error: " << GetLastError() << std::endl;
         CloseHandle(device_handle_);
         device_handle_ = INVALID_HANDLE_VALUE;
         return false;
@@ -75,14 +78,17 @@ bool GsUsbCanPort::open(const char* device_path, unsigned int baud_rate) {
     ULONG transferred;
     WINUSB_SETUP_PACKET setup;
 
+    // 1. Host Config
     gs_usb::HostConfig hconf = { 0x0000BEEF };
     setup = { 0x41, gs_usb::HOST_CONFIG_FORMAT, 0, 0, sizeof(hconf) };
     WinUsb_ControlTransfer(usb_handle_, setup, (PUCHAR)&hconf, sizeof(hconf), &transferred, NULL);
 
+    // 2. Reset (Force into Reset state)
     gs_usb::Mode m_reset = { gs_usb::MODE_RESET, 0 };
     setup = { 0x41, gs_usb::HOST_CONFIG_MODE, 0, 0, sizeof(m_reset) };
     WinUsb_ControlTransfer(usb_handle_, setup, (PUCHAR)&m_reset, sizeof(m_reset), &transferred, NULL);
 
+    // 3. Set Bitrate
     gs_usb::Bitrate br = { baud_rate };
     setup = { 0x41, gs_usb::HOST_CONFIG_BITRATE, 0, 0, sizeof(br) };
     if (!WinUsb_ControlTransfer(usb_handle_, setup, (PUCHAR)&br, sizeof(br), &transferred, NULL)) {
@@ -90,12 +96,17 @@ bool GsUsbCanPort::open(const char* device_path, unsigned int baud_rate) {
         return false;
     }
 
+    // 4. Start (Normal Mode)
     gs_usb::Mode m_start = { gs_usb::MODE_NORMAL, 0 };
     setup = { 0x41, gs_usb::HOST_CONFIG_MODE, 0, 0, sizeof(m_start) };
     if (!WinUsb_ControlTransfer(usb_handle_, setup, (PUCHAR)&m_start, sizeof(m_start), &transferred, NULL)) {
         close();
         return false;
     }
+
+    // --- Policy: Timeout 100ms ---
+    ULONG timeout = 100;
+    WinUsb_SetPipePolicy(usb_handle_, bulk_in_pipe_, PIPE_TRANSFER_TIMEOUT, sizeof(timeout), &timeout);
 
     is_open_ = true;
     return true;
@@ -124,8 +135,21 @@ bool GsUsbCanPort::write(const CanFrame& frame) {
     if (!is_open_ || !usb_handle_) return false;
     std::lock_guard<std::recursive_mutex> lock(g_usb_mutex);
 
-    gs_usb::HostFrame hf = {0};
-    hf.echo_id = 0xFFFFFFFF;
+    // ВАЖНО: Структура HostFrame должна быть выровнена по 1 байту
+#pragma pack(push, 1)
+    struct InternalHostFrame {
+        uint32_t echo_id;
+        uint32_t can_id;
+        uint8_t can_dlc;
+        uint8_t channel;
+        uint8_t flags;
+        uint8_t reserved;
+        uint8_t data[8];
+    };
+#pragma pack(pop)
+
+    InternalHostFrame hf = {0};
+    hf.echo_id = 0xFFFFFFFF; // No echo needed for simple control
     hf.can_id = frame.id;
     if (frame.is_extended) hf.can_id |= 0x80000000U;
     if (frame.is_rtr) hf.can_id |= 0x40000000U;
@@ -140,9 +164,27 @@ bool GsUsbCanPort::read(CanFrame& frame, unsigned int timeout_ms) {
     if (!is_open_ || !usb_handle_) return false;
     std::lock_guard<std::recursive_mutex> lock(g_usb_mutex);
 
-    WinUsb_SetPipePolicy(usb_handle_, bulk_in_pipe_, PIPE_TRANSFER_TIMEOUT, sizeof(timeout_ms), &timeout_ms);
+    // Устанавливаем таймаут, если он изменился
+    static unsigned int last_timeout = 0;
+    if (timeout_ms != last_timeout) {
+        ULONG t = timeout_ms;
+        WinUsb_SetPipePolicy(usb_handle_, bulk_in_pipe_, PIPE_TRANSFER_TIMEOUT, sizeof(t), &t);
+        last_timeout = timeout_ms;
+    }
 
-    gs_usb::HostFrame hf;
+#pragma pack(push, 1)
+    struct InternalHostFrame {
+        uint32_t echo_id;
+        uint32_t can_id;
+        uint8_t can_dlc;
+        uint8_t channel;
+        uint8_t flags;
+        uint8_t reserved;
+        uint8_t data[8];
+    };
+#pragma pack(pop)
+
+    InternalHostFrame hf;
     ULONG read_bytes;
     if (WinUsb_ReadPipe(usb_handle_, bulk_in_pipe_, (PUCHAR)&hf, sizeof(hf), &read_bytes, NULL)) {
         if (read_bytes >= 12) {
@@ -150,7 +192,6 @@ bool GsUsbCanPort::read(CanFrame& frame, unsigned int timeout_ms) {
             frame.is_extended = (hf.can_id & 0x80000000U) != 0;
             frame.is_rtr = (hf.can_id & 0x40000000U) != 0;
             frame.dlc = hf.can_dlc;
-            // BUGFIX: was wmemcpy
             std::memcpy(frame.data, hf.data, 8);
             return true;
         }
@@ -176,7 +217,9 @@ std::vector<GsUsbDeviceInfo> GsUsbCanPort::enumerateDevices() {
             std::string lowPath = path;
             std::transform(lowPath.begin(), lowPath.end(), lowPath.begin(), ::tolower);
 
-            if (lowPath.find("vid_1d50") != std::string::npos && lowPath.find("pid_606f") != std::string::npos) {
+            // Фильтруем устройства CandleLight (gs_usb)
+            if ((lowPath.find("vid_1d50") != std::string::npos && lowPath.find("pid_606f") != std::string::npos) || 
+                (lowPath.find("vid_1209") != std::string::npos && lowPath.find("pid_adba") != std::string::npos)) {
                 std::string desc = "CandleLight USB CAN";
                 if (lowPath.find("mi_00") != std::string::npos) desc += " (Interface 0)";
                 devices.push_back({path, desc});

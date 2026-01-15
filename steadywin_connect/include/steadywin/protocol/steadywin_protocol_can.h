@@ -1,22 +1,22 @@
 #pragma once
 
-#include "steadywin/steadywin_protocol.h"
-#include "steadywin/serial_port_interface.h"
+#include "steadywin/protocol/steadywin_protocol.h"
+#include "steadywin/hal/can_port_interface.h"
 #include <memory>
 
 namespace steadywin {
 
 /**
- * @class SteadywinProtocolRS485
- * @brief Implements the low-level RS485 communication protocol for Steadywin motors.
+ * @class SteadywinProtocolCAN
+ * @brief Implements the Custom CAN Communication Protocol V3.07b0 for Steadywin motors.
  */
-class SteadywinProtocolRS485 : public SteadywinProtocol {
+class SteadywinProtocolCAN : public SteadywinProtocol {
 public:
     /**
      * @brief Constructor.
-     * @param port A shared pointer to an ISerialPort implementation.
+     * @param port A shared pointer to an ICanPort implementation.
      */
-    explicit SteadywinProtocolRS485(std::shared_ptr<ISerialPort> port);
+    explicit SteadywinProtocolCAN(std::shared_ptr<ICanPort> port);
 
     MotorError readRealtimeData(uint8_t device_address, RealtimeDataPayload& data) override;
     MotorError setAbsolutePositionControl(uint8_t device_address, int32_t absolute_position_counts, RealtimeDataPayload& response_data) override;
@@ -31,17 +31,11 @@ public:
 
 private:
     /**
-     * @brief The core function to send a command and wait for a response.
+     * @brief Sends a CAN command and optionally waits for a response.
      */
-    MotorError sendAndReceive(uint8_t device_address, uint8_t command_code, const std::vector<uint8_t>& request_payload, std::vector<uint8_t>& response_payload);
+    MotorError sendCommand(uint8_t device_address, uint8_t command_code, const uint8_t* data, uint8_t len, CanFrame& response);
 
-    /**
-     * @brief Calculates the CRC16-MODBUS checksum for a given data buffer.
-     */
-    static uint16_t calculateCrc16Modbus(const uint8_t* data, size_t length);
-
-    std::shared_ptr<ISerialPort> port_;
-    uint8_t packet_sequence_{0};
+    std::shared_ptr<ICanPort> port_;
     
     static constexpr unsigned int DEFAULT_TIMEOUT_MS = 100;
 };

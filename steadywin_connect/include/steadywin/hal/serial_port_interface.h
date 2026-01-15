@@ -49,9 +49,10 @@ public:
      * @brief Reads a block of bytes from the serial port.
      * @param buffer The buffer to store the read data into.
      * @param timeout_ms Timeout for the read operation in milliseconds.
+     * @param max_bytes The maximum number of bytes to read. If 0, reads whatever is available up to internal buffer size.
      * @return The number of bytes read, or -1 on error/timeout.
      */
-    virtual long long read(std::vector<uint8_t>& buffer, unsigned int timeout_ms) = 0;
+    virtual long long read(std::vector<uint8_t>& buffer, unsigned int timeout_ms, size_t max_bytes = 0) = 0;
 };
 
 } // namespace steadywin

@@ -1,7 +1,7 @@
 #pragma once
 
-#include "steadywin/motor_error.h"
-#include "steadywin/steadywin_types.h"
+#include "steadywin/protocol/motor_error.h"
+#include "steadywin/protocol/steadywin_types.h"
 #include <cstdint>
 #include <vector>
 

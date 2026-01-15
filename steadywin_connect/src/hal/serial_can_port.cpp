@@ -1,4 +1,4 @@
-#include "steadywin/serial_can_port.h"
+#include "steadywin/hal/serial_can_port.h"
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -66,7 +66,8 @@ bool SerialCanPort::read(CanFrame& frame, unsigned int timeout_ms) {
     if (!isOpen()) return false;
 
     std::vector<uint8_t> buffer;
-    if (serial_port_->read(buffer, timeout_ms) <= 0) return false;
+    // SLCAN commands are usually around 20-30 chars, so 1024 is plenty.
+    if (serial_port_->read(buffer, timeout_ms, 1024) <= 0) return false;
 
     // Very basic SLCAN parser (expects a full command in one read for simplicity)
     if (buffer.empty()) return false;

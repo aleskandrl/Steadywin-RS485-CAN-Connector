@@ -1,4 +1,4 @@
-#include "steadywin/steadywin_protocol_can.h"
+#include "steadywin/protocol/steadywin_protocol_can.h"
 #include <cstring>
 #include <algorithm>
 #include <vector>

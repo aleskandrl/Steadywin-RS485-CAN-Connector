@@ -1,4 +1,4 @@
-#include "steadywin/steadywin_motor.h"
+#include "steadywin/core/steadywin_motor.h"
 #include <chrono>
 #include <thread>
 #include <cmath> // For std::abs
@@ -137,7 +137,7 @@ MotorError SteadywinMotor::moveToAndWait(double angle_degrees, unsigned int time
         }
 
         // Wait a bit before the next poll to avoid spamming the bus
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 }
 
@@ -235,7 +235,7 @@ MotorError SteadywinMotor::moveToWithProfile(double angle_degrees, const Velocit
         first_loop = false;
 
         // Loop frequency control - ~50Hz is reasonable for host-side control over RS485
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 }
 

@@ -1,4 +1,4 @@
-#include "steadywin/steadywin_protocol_rs485.h"
+#include "steadywin/protocol/steadywin_protocol_rs485.h"
 #include <cstring> // For memcpy
 
 namespace steadywin {
@@ -167,27 +167,34 @@ MotorError SteadywinProtocolRS485::sendAndReceive(uint8_t device_address, uint8_
 
     // 3. Receive the response
     std::vector<uint8_t> response_buffer;
-    if (port_->read(response_buffer, DEFAULT_TIMEOUT_MS) <= 0) {
+    
+    // Stage 1: Read the header (5 bytes: Header, Seq, Addr, Cmd, Len)
+    std::vector<uint8_t> header_buffer;
+    if (port_->read(header_buffer, DEFAULT_TIMEOUT_MS, HEADER_TO_DATA_LEN) != static_cast<long long>(HEADER_TO_DATA_LEN)) {
         return MotorError::Timeout;
     }
 
-    // 4. Validate the response packet
-    if (response_buffer.size() < MIN_RESPONSE_SIZE) {
+    if (header_buffer[0] != SLAVE_HEADER) {
         return MotorError::InvalidResponse;
     }
-    if (response_buffer[0] != SLAVE_HEADER) {
-        return MotorError::InvalidResponse;
-    }
-    if (response_buffer[1] != packet_sequence_) {
+    if (header_buffer[1] != packet_sequence_) {
         return MotorError::PacketSequenceMismatch;
     }
-    // We can add more checks like address and command code if needed
 
-    uint8_t response_len = response_buffer[4];
-    if (response_buffer.size() != (HEADER_TO_DATA_LEN + response_len + 2)) {
-        return MotorError::InvalidResponse; // Size mismatch
+    uint8_t response_len = header_buffer[4];
+    
+    // Stage 2: Read the payload and CRC (response_len + 2 bytes)
+    std::vector<uint8_t> body_buffer;
+    size_t body_to_read = response_len + 2;
+    if (port_->read(body_buffer, DEFAULT_TIMEOUT_MS, body_to_read) != static_cast<long long>(body_to_read)) {
+        return MotorError::Timeout;
     }
 
+    // Combine header and body for CRC check
+    response_buffer = std::move(header_buffer);
+    response_buffer.insert(response_buffer.end(), body_buffer.begin(), body_buffer.end());
+
+    // 4. Validate the response packet
     uint16_t received_crc = (static_cast<uint16_t>(response_buffer.back()) << 8) | response_buffer[response_buffer.size() - 2];
     uint16_t calculated_crc = calculateCrc16Modbus(response_buffer.data(), response_buffer.size() - 2);
 

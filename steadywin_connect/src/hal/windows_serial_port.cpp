@@ -1,4 +1,4 @@
-#include "steadywin/windows_serial_port.h"
+#include "steadywin/hal/windows_serial_port.h"
 #include <iostream>
 #include <iomanip>
 #include <vector>
@@ -71,24 +71,31 @@ long long WindowsSerialPort::write(const std::vector<uint8_t>& data) {
     return static_cast<long long>(bytesWritten);
 }
 
-long long WindowsSerialPort::read(std::vector<uint8_t>& buffer, unsigned int timeout_ms) {
+long long WindowsSerialPort::read(std::vector<uint8_t>& buffer, unsigned int timeout_ms, size_t max_bytes) {
     if (!is_open_) return -1;
 
+    // Use a reasonable buffer size if max_bytes is not specified
+    size_t bytes_to_request = (max_bytes > 0) ? max_bytes : 1024;
+
     COMMTIMEOUTS timeouts = {0};
-    timeouts.ReadIntervalTimeout = 50;
+    // ReadIntervalTimeout = 1ms ensures we don't wait 50ms after the last byte.
+    // At 115200 baud, 1 byte takes ~0.087ms, so 1ms is plenty for inter-byte gap.
+    timeouts.ReadIntervalTimeout = 1; 
     timeouts.ReadTotalTimeoutConstant = timeout_ms;
-    timeouts.ReadTotalTimeoutMultiplier = 10;
+    timeouts.ReadTotalTimeoutMultiplier = 0; // Don't add per-byte delay for small packets
     SetCommTimeouts(hSerial_, &timeouts);
 
-    uint8_t temp_buf[1024];
+    std::vector<uint8_t> temp_buf(bytes_to_request);
     DWORD bytesRead;
-    if (!ReadFile(hSerial_, temp_buf, sizeof(temp_buf), &bytesRead, NULL)) {
+    if (!ReadFile(hSerial_, temp_buf.data(), static_cast<DWORD>(temp_buf.size()), &bytesRead, NULL)) {
         return -1;
     }
 
     if (bytesRead > 0) {
-        buffer.assign(temp_buf, temp_buf + bytesRead);
+        buffer.assign(temp_buf.begin(), temp_buf.begin() + bytesRead);
         // printHex("RX <- ", buffer.data(), buffer.size());
+    } else {
+        buffer.clear();
     }
 
     return static_cast<long long>(bytesRead);

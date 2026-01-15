@@ -1,7 +1,7 @@
 #pragma once
 
-#include "steadywin/can_port_interface.h"
-#include "steadywin/serial_port_interface.h"
+#include "steadywin/hal/can_port_interface.h"
+#include "steadywin/hal/serial_port_interface.h"
 #include <memory>
 #include <string>
 

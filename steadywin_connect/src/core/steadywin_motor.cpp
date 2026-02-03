@@ -1,242 +1,289 @@
 #include "steadywin/core/steadywin_motor.h"
 #include <chrono>
 #include <thread>
-#include <cmath> // For std::abs
+#include <cmath>
+#include <iostream>
 
 namespace steadywin {
 
-SteadywinMotor::SteadywinMotor(uint8_t device_address, std::unique_ptr<SteadywinProtocol> protocol)
-    : device_address_(device_address), protocol_(std::move(protocol)) {
+// Note: The constructor signature has changed.
+SteadywinMotor::SteadywinMotor(uint8_t device_address, std::shared_ptr<SteadywinProtocol> protocol, std::recursive_mutex& bus_mutex)
+    : device_address_(device_address),
+      protocol_(protocol),
+      bus_mutex_(bus_mutex)
+{
 }
 
 MotorError SteadywinMotor::initialize() {
     std::lock_guard<std::recursive_mutex> lock(bus_mutex_);
-    // To initialize, we just try to get the first telemetry packet.
-    // If it succeeds, we know the motor is connected and responding.
-    MotorError result = getTelemetry(last_telemetry_);
+    // To initialize, we just read some data. If it succeeds, the motor is there.
+    RealtimeDataPayload payload;
+    MotorError result = protocol_->readRealtimeData(device_address_, payload);
     if (result == MotorError::Ok) {
         is_initialized_ = true;
+        // Sync smoothing target with current position to avoid jumps
+        accumulated_target_deg_ = payload.multi_turn_angle * COUNTS_TO_DEG;
+        target_initialized_ = true;
     }
     return result;
 }
 
 MotorError SteadywinMotor::disable() {
-    if (!is_initialized_) return MotorError::NotInitialized;
     std::lock_guard<std::recursive_mutex> lock(bus_mutex_);
-    RealtimeDataPayload response_payload;
-    return protocol_->disableMotor(device_address_, response_payload);
+    RealtimeDataPayload response;
+    return protocol_->disableMotor(device_address_, response);
 }
 
-MotorError SteadywinMotor::holdPosition()
-{
-    if (!is_initialized_) return MotorError::NotInitialized;
-
-    // First, get the current position
-    MotorError result = getTelemetry(last_telemetry_);
-    if (result != MotorError::Ok) {
-        return result;
+MotorError SteadywinMotor::holdPosition() {
+    // Hold position is achieved by moving to the current position.
+    // First, get the current position.
+    Telemetry current_telemetry;
+    MotorError err = getTelemetry(current_telemetry); // getTelemetry is already locked
+    if (err != MotorError::Ok) {
+        return err;
     }
-    
-    // Then, command the motor to move to that exact position
-    return moveTo(last_telemetry_.multi_turn_angle_deg);
+    // Now command a move to that position.
+    return moveTo(current_telemetry.multi_turn_angle_deg);
 }
 
 MotorError SteadywinMotor::moveTo(double angle_degrees) {
-    if (!is_initialized_) return MotorError::NotInitialized;
     std::lock_guard<std::recursive_mutex> lock(bus_mutex_);
 
-    // Convert degrees to encoder counts
-    const int32_t target_counts = static_cast<int32_t>(angle_degrees * DEG_TO_COUNTS);
+    if (!target_initialized_) {
+        accumulated_target_deg_ = angle_degrees;
+        target_initialized_ = true;
+    } else {
+        // Always apply EMA for smoothness
+        accumulated_target_deg_ = (smoothing_factor_ * angle_degrees) + 
+                                  ((1.0 - smoothing_factor_) * accumulated_target_deg_);
+    }
 
-    RealtimeDataPayload response_payload;
-    return protocol_->setAbsolutePositionControl(device_address_, target_counts, response_payload);
+    int32_t target_counts = static_cast<int32_t>(accumulated_target_deg_ * DEG_TO_COUNTS);
+    RealtimeDataPayload response;
+    return protocol_->setAbsolutePositionControl(device_address_, target_counts, response);
 }
 
 MotorError SteadywinMotor::moveRelative(double delta_degrees) {
-    if (!is_initialized_) return MotorError::NotInitialized;
     std::lock_guard<std::recursive_mutex> lock(bus_mutex_);
-    const int32_t delta_counts = static_cast<int32_t>(delta_degrees * DEG_TO_COUNTS);
-    RealtimeDataPayload response_payload;
-    return protocol_->setRelativePositionControl(device_address_, delta_counts, response_payload);
+    int32_t relative_counts = static_cast<int32_t>(delta_degrees * DEG_TO_COUNTS);
+    RealtimeDataPayload response;
+    return protocol_->setRelativePositionControl(device_address_, relative_counts, response);
 }
 
 MotorError SteadywinMotor::setVelocity(double velocity_rpm) {
-    if (!is_initialized_) return MotorError::NotInitialized;
     std::lock_guard<std::recursive_mutex> lock(bus_mutex_);
-    const int32_t velocity_x100 = static_cast<int32_t>(velocity_rpm / RPM_UNIT);
-    RealtimeDataPayload response_payload;
-    return protocol_->setVelocityControl(device_address_, velocity_x100, 0, response_payload); // 0 for max accel
+    int32_t target_velocity_x100 = static_cast<int32_t>(velocity_rpm / RPM_UNIT);
+    uint32_t acceleration = 1000; // Default acceleration for now
+    RealtimeDataPayload response;
+    return protocol_->setVelocityControl(device_address_, target_velocity_x100, acceleration, response);
 }
 
 MotorError SteadywinMotor::clearFaults() {
-    if (!is_initialized_) return MotorError::NotInitialized;
     std::lock_guard<std::recursive_mutex> lock(bus_mutex_);
     uint8_t current_faults;
     return protocol_->clearFaults(device_address_, current_faults);
 }
 
 MotorError SteadywinMotor::setZero() {
-    if (!is_initialized_) return MotorError::NotInitialized;
     std::lock_guard<std::recursive_mutex> lock(bus_mutex_);
     uint16_t mechanical_offset;
     return protocol_->setZeroPoint(device_address_, mechanical_offset);
 }
 
 MotorError SteadywinMotor::setBrake(bool closed) {
-    if (!is_initialized_) return MotorError::NotInitialized;
     std::lock_guard<std::recursive_mutex> lock(bus_mutex_);
+    // Inverted logic: 0x00 = Closed (Engaged), 0x01 = Open (Released)
+    uint8_t operation = closed ? 0x00 : 0x01;
     uint8_t status;
-    return protocol_->setBrakeControl(device_address_, closed ? 0x01 : 0x00, status);
+    return protocol_->setBrakeControl(device_address_, operation, status);
+}
+
+void SteadywinMotor::setSmoothingFactor(double alpha) {
+    if (alpha < 0.0) alpha = 0.0;
+    if (alpha > 1.0) alpha = 1.0;
+    smoothing_factor_ = alpha;
 }
 
 MotorError SteadywinMotor::setPositionSpeedLimit(double rpm) {
-    if (!is_initialized_) return MotorError::NotInitialized;
     std::lock_guard<std::recursive_mutex> lock(bus_mutex_);
     MotionControlParametersPayload params;
-    // First read current to keep other values (KP/KI)
-    MotorError result = protocol_->readMotionControlParameters(device_address_, params);
-    if (result != MotorError::Ok) return result;
-    
-    params.pos_limit_rpm_x100 = static_cast<uint32_t>(rpm / 0.01);
+    // First, read current params
+    MotorError err = protocol_->readMotionControlParameters(device_address_, params);
+    if (err != MotorError::Ok) {
+        return err;
+    }
+    // Then, modify only the speed limit
+    params.pos_limit_rpm_x100 = static_cast<uint32_t>(rpm / RPM_UNIT);
+    // Finally, write them back
     return protocol_->writeMotionControlParameters(device_address_, params);
 }
 
-MotorError SteadywinMotor::moveToAndWait(double angle_degrees, unsigned int timeout_ms, double tolerance_deg) {
-    // Start the move
-    MotorError result = moveTo(angle_degrees);
-    if (result != MotorError::Ok) {
-        return result;
-    }
+MotorError SteadywinMotor::setPIDs(float pos_kp, float pos_ki, float vel_kp, float vel_ki) {
+    std::lock_guard<std::recursive_mutex> lock(bus_mutex_);
+    MotionControlParametersPayload params;
+    MotorError err = protocol_->readMotionControlParameters(device_address_, params);
+    if (err != MotorError::Ok) return err;
+    
+    params.pos_kp = pos_kp;
+    params.pos_ki = pos_ki;
+    params.vel_kp = vel_kp;
+    params.vel_ki = vel_ki;
+    
+    return protocol_->writeMotionControlParameters(device_address_, params);
+}
 
+MotorError SteadywinMotor::getPIDs(float& pos_kp, float& pos_ki, float& vel_kp, float& vel_ki) {
+    std::lock_guard<std::recursive_mutex> lock(bus_mutex_);
+    MotionControlParametersPayload params;
+    MotorError err = protocol_->readMotionControlParameters(device_address_, params);
+    if (err != MotorError::Ok) return err;
+    
+    pos_kp = params.pos_kp;
+    pos_ki = params.pos_ki;
+    vel_kp = params.vel_kp;
+    vel_ki = params.vel_ki;
+    return MotorError::Ok;
+}
+
+MotorError SteadywinMotor::moveToAndWait(double angle_degrees, unsigned int timeout_ms, double tolerance_deg) {
     auto start_time = std::chrono::steady_clock::now();
+
+    MotorError err = moveTo(angle_degrees);
+    if (err != MotorError::Ok) {
+        return err;
+    }
 
     while (true) {
         // Check for timeout
         auto now = std::chrono::steady_clock::now();
         auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count();
-        if (elapsed_ms >= timeout_ms) {
+        if (elapsed_ms > timeout_ms) {
             return MotorError::Timeout;
         }
 
-        // Get current telemetry
+        // Get current state
         Telemetry current_telemetry;
-        result = getTelemetry(current_telemetry);
-        if (result != MotorError::Ok) {
-            // If communication fails, we can't continue
-            return result;
+        err = getTelemetry(current_telemetry);
+        if (err != MotorError::Ok) {
+            return err; // Communication error
         }
-
-        // Check for device faults
+        
         if (current_telemetry.raw_fault_code != 0) {
             return MotorError::DeviceReportedFault;
         }
 
         // Check if target is reached
         if (std::abs(current_telemetry.multi_turn_angle_deg - angle_degrees) <= tolerance_deg) {
+            // Optional: wait for velocity to be near zero
+            if (std::abs(current_telemetry.velocity_rpm) < 1.0) {
+                 return MotorError::Ok;
+            }
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+}
+
+MotorError SteadywinMotor::moveToWithProfile(double angle_degrees, const VelocityControlProfile& profile, unsigned int timeout_ms) {
+    // This is a conceptual implementation of a host-side trajectory generator.
+    // NOTE: For true on-the-fly retargeting, `target_angle_deg` should be an atomic
+    // or mutex-protected member variable. For this example, we treat it as constant.
+    const double target_angle_deg = angle_degrees;
+
+    auto start_time = std::chrono::steady_clock::now();
+    const double control_loop_dt_s = 0.01; // 10ms control loop
+
+    Telemetry current_telemetry;
+    MotorError err = getTelemetry(current_telemetry);
+    if (err != MotorError::Ok) return err;
+
+    double current_velocity_rpm = current_telemetry.velocity_rpm;
+    double acceleration_rpm_s = profile.acceleration_rpm_s;
+    if (acceleration_rpm_s <= 0) acceleration_rpm_s = 500.0; // safety
+
+    while (true) {
+        // --- 1. Timing and Timeout Check ---
+        auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count() > timeout_ms) {
+            setVelocity(0); // Stop the motor
+            return MotorError::Timeout;
+        }
+
+        // --- 2. Get Feedback ---
+        err = getTelemetry(current_telemetry);
+        if (err != MotorError::Ok) return err;
+        if (current_telemetry.raw_fault_code != 0) return MotorError::DeviceReportedFault;
+
+        // --- 3. Check for Completion ---
+        double remaining_dist_deg = target_angle_deg - current_telemetry.multi_turn_angle_deg;
+        if (std::abs(remaining_dist_deg) <= profile.tolerance_deg) {
+            setVelocity(0);
             return MotorError::Ok;
         }
 
-        // Wait a bit before the next poll to avoid spamming the bus
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        // --- 4. Trajectory Generation ---
+        double direction = (remaining_dist_deg > 0) ? 1.0 : -1.0;
+        
+        // Calculate braking distance in degrees. V^2 = V0^2 + 2*a*d  => d = V^2 / (2*a)
+        // Convert units: RPM to Deg/s, RPM/s to Deg/s^2
+        double current_vel_dps = current_velocity_rpm * 360.0 / 60.0;
+        double accel_dps2 = acceleration_rpm_s * 360.0 / 60.0;
+        double braking_dist_deg = (current_vel_dps * current_vel_dps) / (2.0 * accel_dps2);
+
+        double target_velocity_rpm = 0;
+
+        // --- State Machine ---
+        if (std::abs(remaining_dist_deg) <= braking_dist_deg) {
+            // BRAKING PHASE: We are inside the braking window, must decelerate.
+            // Simplified deceleration logic for this example.
+            target_velocity_rpm = current_velocity_rpm - direction * acceleration_rpm_s * control_loop_dt_s;
+        } else {
+            // ACCELERATION / CRUISING PHASE
+            target_velocity_rpm = current_velocity_rpm + direction * acceleration_rpm_s * control_loop_dt_s;
+        }
+
+        // --- 5. Saturation and Command ---
+        // Clamp target velocity to profile limits
+        target_velocity_rpm = std::min(target_velocity_rpm, profile.max_velocity_rpm);
+        target_velocity_rpm = std::max(target_velocity_rpm, -profile.max_velocity_rpm);
+
+        // Send the command
+        setVelocity(target_velocity_rpm);
+        current_velocity_rpm = target_velocity_rpm; // Assume motor follows command for next cycle calculation
+
+        // --- 6. Loop Delay ---
+        std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<long>(control_loop_dt_s * 1000)));
     }
+    
+    return MotorError::UnknownError; // Should not be reached
 }
+
 
 MotorError SteadywinMotor::getTelemetry(Telemetry& telemetry) {
     std::lock_guard<std::recursive_mutex> lock(bus_mutex_);
     RealtimeDataPayload payload;
     MotorError result = protocol_->readRealtimeData(device_address_, payload);
-
     if (result == MotorError::Ok) {
         telemetry = convertPayloadToTelemetry(payload);
+        last_telemetry_ = telemetry;
+
+        // If not initialized yet, sync the smoothing target
+        if (!target_initialized_) {
+            accumulated_target_deg_ = telemetry.multi_turn_angle_deg;
+            target_initialized_ = true;
+        }
     }
     return result;
 }
 
-MotorError SteadywinMotor::moveToWithProfile(double angle_degrees, const VelocityControlProfile& profile, unsigned int timeout_ms) {
-    if (!is_initialized_) return MotorError::NotInitialized;
-
-    auto start_time = std::chrono::steady_clock::now();
-    auto last_time = start_time;
-    double integral_error = 0.0;
-    double last_error = 0.0;
-    double current_commanded_velocity = 0.0;
-    bool first_loop = true;
-
-    // Get initial velocity to start ramping from it
-    Telemetry initial_telemetry;
-    if (getTelemetry(initial_telemetry) == MotorError::Ok) {
-        current_commanded_velocity = initial_telemetry.velocity_rpm;
+MotorError SteadywinMotor::getPositionFeedback(double& angle_deg) {
+    std::lock_guard<std::recursive_mutex> lock(bus_mutex_);
+    int32_t raw_counts;
+    MotorError result = protocol_->readMultiTurnAngle(device_address_, raw_counts);
+    if (result == MotorError::Ok) {
+        angle_deg = raw_counts * COUNTS_TO_DEG;
     }
-
-    while (true) {
-        auto now = std::chrono::steady_clock::now();
-        auto elapsed_total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count();
-        if (elapsed_total_ms >= timeout_ms) {
-            setVelocity(0.0); // Stop the motor
-            return MotorError::Timeout;
-        }
-
-        double dt = std::chrono::duration<double>(now - last_time).count();
-        if (dt <= 0.0) dt = 0.001; // Prevent division by zero
-        last_time = now;
-
-        Telemetry telemetry;
-        MotorError res = getTelemetry(telemetry);
-        if (res != MotorError::Ok) return res;
-
-        if (telemetry.raw_fault_code != 0) {
-            setVelocity(0.0);
-            return MotorError::DeviceReportedFault;
-        }
-
-        double current_angle = telemetry.multi_turn_angle_deg;
-        double error = angle_degrees - current_angle;
-
-        if (std::abs(error) <= profile.tolerance_deg && std::abs(telemetry.velocity_rpm) < 1.0) {
-            setVelocity(0.0);
-            return MotorError::Ok;
-        }
-
-        // PID Control
-        integral_error += error * dt;
-        
-        // Anti-windup: clamp integral term
-        double max_i_term = profile.max_velocity_rpm * 0.5; 
-        if (profile.i_gain > 0) {
-            if (integral_error * profile.i_gain > max_i_term) integral_error = max_i_term / profile.i_gain;
-            if (integral_error * profile.i_gain < -max_i_term) integral_error = -max_i_term / profile.i_gain;
-        }
-
-        double derivative_error = first_loop ? 0.0 : (error - last_error) / dt;
-        
-        double requested_velocity = (profile.p_gain * error) + 
-                                   (profile.i_gain * integral_error) + 
-                                   (profile.d_gain * derivative_error);
-
-        // Clamp requested velocity to max limit
-        if (requested_velocity > profile.max_velocity_rpm) requested_velocity = profile.max_velocity_rpm;
-        if (requested_velocity < -profile.max_velocity_rpm) requested_velocity = -profile.max_velocity_rpm;
-
-        // Apply Acceleration Limiting (Ramping)
-        double max_dv = profile.acceleration_rpm_s * dt;
-        double velocity_diff = requested_velocity - current_commanded_velocity;
-        
-        if (std::abs(velocity_diff) > max_dv) {
-            if (velocity_diff > 0) current_commanded_velocity += max_dv;
-            else current_commanded_velocity -= max_dv;
-        } else {
-            current_commanded_velocity = requested_velocity;
-        }
-
-        res = setVelocity(current_commanded_velocity);
-        if (res != MotorError::Ok) return res;
-
-        last_error = error;
-        first_loop = false;
-
-        // Loop frequency control - ~50Hz is reasonable for host-side control over RS485
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
+    return result;
 }
 
 bool SteadywinMotor::hasFault() {
@@ -249,13 +296,13 @@ bool SteadywinMotor::hasFault() {
 
 Telemetry SteadywinMotor::convertPayloadToTelemetry(const RealtimeDataPayload& payload) {
     Telemetry telemetry;
-    telemetry.single_turn_angle_deg = static_cast<double>(payload.single_turn_angle) * COUNTS_TO_DEG;
-    telemetry.multi_turn_angle_deg = static_cast<double>(payload.multi_turn_angle) * COUNTS_TO_DEG;
-    telemetry.velocity_rpm = static_cast<double>(payload.mechanical_velocity) * RPM_UNIT;
-    telemetry.q_axis_current_amps = static_cast<double>(payload.q_axis_current) * CURRENT_UNIT;
-    telemetry.bus_voltage_volts = static_cast<double>(payload.bus_voltage) * VOLTAGE_UNIT;
-    telemetry.bus_current_amps = static_cast<double>(payload.bus_current) * CURRENT_UNIT;
-    telemetry.temperature_celsius = static_cast<int8_t>(payload.working_temperature);
+    telemetry.single_turn_angle_deg = payload.single_turn_angle * COUNTS_TO_DEG;
+    telemetry.multi_turn_angle_deg = payload.multi_turn_angle * COUNTS_TO_DEG;
+    telemetry.velocity_rpm = payload.mechanical_velocity * RPM_UNIT;
+    telemetry.q_axis_current_amps = payload.q_axis_current * CURRENT_UNIT;
+    telemetry.bus_voltage_volts = payload.bus_voltage * VOLTAGE_UNIT;
+    telemetry.bus_current_amps = payload.bus_current * 0.01; // Assuming same unit as voltage
+    telemetry.temperature_celsius = payload.working_temperature;
     telemetry.raw_running_status = payload.running_status;
     telemetry.raw_motor_status = payload.motor_status;
     telemetry.raw_fault_code = payload.fault_code;

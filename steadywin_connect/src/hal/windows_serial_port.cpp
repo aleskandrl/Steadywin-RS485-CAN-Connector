@@ -101,6 +101,12 @@ long long WindowsSerialPort::read(std::vector<uint8_t>& buffer, unsigned int tim
     return static_cast<long long>(bytesRead);
 }
 
+void WindowsSerialPort::flush() {
+    if (is_open_ && hSerial_ != INVALID_HANDLE_VALUE) {
+        PurgeComm(hSerial_, PURGE_RXCLEAR | PURGE_TXCLEAR);
+    }
+}
+
 void WindowsSerialPort::printHex(std::string_view prefix, const uint8_t* data, size_t length) {
     std::cout << prefix;
     for (size_t i = 0; i < length; ++i) {

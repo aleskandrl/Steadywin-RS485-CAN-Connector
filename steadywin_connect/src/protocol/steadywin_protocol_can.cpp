@@ -167,6 +167,15 @@ MotorError SteadywinProtocolCAN::setRelativePositionControl(uint8_t device_addre
     return MotorError::Ok;
 }
 
+// Command 0xA3
+MotorError SteadywinProtocolCAN::readMultiTurnAngle(uint8_t device_address, int32_t& angle_counts) {
+    CanFrame resp;
+    MotorError err = sendCommand(device_address, 0xA3, nullptr, 0, resp);
+    if (err != MotorError::Ok) return err;
+    std::memcpy(&angle_counts, resp.data + 3, 4);
+    return MotorError::Ok;
+}
+
 // Command 0xCE
 MotorError SteadywinProtocolCAN::setBrakeControl(uint8_t device_address, uint8_t operation, uint8_t& status) {
     CanFrame resp;

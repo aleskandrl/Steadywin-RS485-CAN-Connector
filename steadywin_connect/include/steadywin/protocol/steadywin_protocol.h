@@ -42,9 +42,14 @@ public:
     virtual MotorError disableMotor(uint8_t device_address, RealtimeDataPayload& response_data) = 0;
 
     /**
-     * @brief Clears faults.
+     * @brief [0x0F] Clear faults.
      */
     virtual MotorError clearFaults(uint8_t device_address, uint8_t& current_faults) = 0;
+
+    /**
+     * @brief [0xA3] Read multi-turn angle from the motor.
+     */
+    virtual MotorError readMultiTurnAngle(uint8_t device_address, int32_t& angle_counts) = 0;
 
     /**
      * @brief Sets current position as zero point.

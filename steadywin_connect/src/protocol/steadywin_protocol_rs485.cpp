@@ -73,6 +73,25 @@ MotorError SteadywinProtocolRS485::setRelativePositionControl(uint8_t device_add
     return MotorError::Ok;
 }
 
+// Command 0xA3 (Using 0x33 for RS485 if supported, or falling back to full read)
+MotorError SteadywinProtocolRS485::readMultiTurnAngle(uint8_t device_address, int32_t& angle_counts) {
+    // Attempt efficient read using 0x33 (Angle read)
+    std::vector<uint8_t> response_payload;
+    MotorError result = sendAndReceive(device_address, 0x33, {}, response_payload);
+    if (result == MotorError::Ok && response_payload.size() >= 6) {
+        std::memcpy(&angle_counts, response_payload.data() + 2, 4);
+        return MotorError::Ok;
+    }
+    
+    // Fallback: Read full telemetry (0x0B) and extract angle
+    RealtimeDataPayload data;
+    result = readRealtimeData(device_address, data);
+    if (result == MotorError::Ok) {
+        angle_counts = data.multi_turn_angle;
+    }
+    return result;
+}
+
 MotorError SteadywinProtocolRS485::setBrakeControl(uint8_t device_address, uint8_t operation, uint8_t& status) {
     std::vector<uint8_t> request_payload = { operation };
     std::vector<uint8_t> response_payload;
@@ -161,6 +180,9 @@ MotorError SteadywinProtocolRS485::sendAndReceive(uint8_t device_address, uint8_
     request_packet.push_back(static_cast<uint8_t>(crc >> 8));  // CRC High Byte
 
     // 2. Send the packet
+    // Flush input buffer to clear any old data/noise before sending a new command
+    port_->flush();
+    
     if (port_->write(request_packet) != static_cast<long long>(request_packet.size())) {
         return MotorError::WriteError;
     }

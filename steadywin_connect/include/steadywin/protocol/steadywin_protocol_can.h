@@ -22,6 +22,7 @@ public:
     MotorError setAbsolutePositionControl(uint8_t device_address, int32_t absolute_position_counts, RealtimeDataPayload& response_data) override;
     MotorError disableMotor(uint8_t device_address, RealtimeDataPayload& response_data) override;
     MotorError clearFaults(uint8_t device_address, uint8_t& current_faults) override;
+    MotorError readMultiTurnAngle(uint8_t device_address, int32_t& angle_counts) override;
     MotorError setZeroPoint(uint8_t device_address, uint16_t& mechanical_offset) override;
     MotorError setVelocityControl(uint8_t device_address, int32_t target_velocity_rpm_x100, uint32_t acceleration, RealtimeDataPayload& response_data) override;
     MotorError setRelativePositionControl(uint8_t device_address, int32_t relative_counts, RealtimeDataPayload& response_data) override;

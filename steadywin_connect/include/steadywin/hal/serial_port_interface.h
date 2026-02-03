@@ -53,6 +53,11 @@ public:
      * @return The number of bytes read, or -1 on error/timeout.
      */
     virtual long long read(std::vector<uint8_t>& buffer, unsigned int timeout_ms, size_t max_bytes = 0) = 0;
+
+    /**
+     * @brief Flushes the input and output buffers of the serial port.
+     */
+    virtual void flush() = 0;
 };
 
 } // namespace steadywin

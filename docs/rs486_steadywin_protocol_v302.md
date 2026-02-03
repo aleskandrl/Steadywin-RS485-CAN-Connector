@@ -360,7 +360,7 @@ The product's factory default **Device Address is 0x01**. The device address can
 | [5]-[8] | Position Loop Kp | 4f | |
 | [9]-[12] | Position Loop Ki | 4f | |
 | [13]-[16] | Position Loop Output Limit | 4u | Position mode max speed, Unit: 0.01 Rpm; |
-| [17]-[20] | Velocity Loop Kp | 4f | |
+| [17]-[20] | Velocity Loopnh Kp | 4f | |
 | [21]-[24] | Velocity Loop Ki | 4f | |
 | [25]-[28] | Velocity Loop Output Limit | 4u | Velocity/Position mode max Q-axis current, Unit: 0.001A |
 | [29]-[30] | CRC16 Check | 2u | DATA[0]~DATA[28] bytes CRC16 Check |

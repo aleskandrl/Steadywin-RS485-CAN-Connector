@@ -20,6 +20,7 @@ public:
     bool isOpen() const override;
     long long write(const std::vector<uint8_t>& data) override;
     long long read(std::vector<uint8_t>& buffer, unsigned int timeout_ms, size_t max_bytes = 0) override;
+    void flush() override;
 
 private:
     HANDLE hSerial_{INVALID_HANDLE_VALUE};

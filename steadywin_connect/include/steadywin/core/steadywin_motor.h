@@ -9,21 +9,26 @@
 
 namespace steadywin {
 
+// Forward declaration to break circular dependency, not strictly needed but good practice
+class MotorManager;
+
 /**
  * @class SteadywinMotor
- * @brief High-level controller for a Steadywin servo motor.
+ * @brief High-level controller for a single Steadywin servo motor.
  * This class provides a user-friendly API for controlling the motor, handling
  * unit conversions, and managing state. It implements the "czar-methods"
- * for common robotics tasks.
+ * for common robotics tasks. 
+ * NOTE: This class is now intended to be created and managed by the MotorManager.
  */
 class SteadywinMotor {
 public:
     /**
-     * @brief Constructor.
+     * @brief Constructor. Intended to be called by MotorManager.
      * @param device_address The bus address of the motor (1-254).
-     * @param protocol A unique pointer to a SteadywinProtocol implementation (RS485 or CAN).
+     * @param protocol A shared pointer to a SteadywinProtocol implementation (owned by MotorManager).
+     * @param bus_mutex A reference to the global bus mutex (owned by MotorManager).
      */
-    SteadywinMotor(uint8_t device_address, std::unique_ptr<SteadywinProtocol> protocol);
+    SteadywinMotor(uint8_t device_address, std::shared_ptr<SteadywinProtocol> protocol, std::recursive_mutex& bus_mutex);
 
     /**
      * @brief Initializes communication with the motor.
@@ -84,10 +89,34 @@ public:
     MotorError setBrake(bool closed);
 
     /**
+     * @brief Sets the smoothing factor for position control (EMA filter).
+     * @param alpha Smoothing factor between 0.0 and 1.0.
+     *              1.0 = No smoothing (instant follow)
+     *              0.1 = Heavy smoothing
+     *              0.0 = Target never changes
+     */
+    void setSmoothingFactor(double alpha);
+
+    /**
+     * @brief Returns the current smoothing factor.
+     */
+    double getSmoothingFactor() const { return smoothing_factor_; }
+
+    /**
      * @brief Sets the speed limit for position control mode.
      * Uses command 0x15 to update motion control parameters.
      */
     MotorError setPositionSpeedLimit(double rpm);
+
+    /**
+     * @brief Sets PID parameters for position and velocity loops.
+     */
+    MotorError setPIDs(float pos_kp, float pos_ki, float vel_kp, float vel_ki);
+
+    /**
+     * @brief Gets current PID parameters.
+     */
+    MotorError getPIDs(float& pos_kp, float& pos_ki, float& vel_kp, float& vel_ki);
 
     /**
      * @brief A blocking version of moveTo.
@@ -103,11 +132,12 @@ public:
     MotorError moveToAndWait(double angle_degrees, unsigned int timeout_ms, double tolerance_deg = 0.1);
 
     /**
-     * @brief High-level position control with custom profile.
-     * This is a blocking call that implements a position control loop on the host side,
-     * sending velocity commands to the motor.
+     * @brief High-level position control with a trapezoidal velocity profile.
+     * This is a blocking call that implements a host-side trajectory generator,
+     * sending velocity commands to the motor. It supports on-the-fly retargeting
+     * if called again from another thread while a move is in progress.
      * @param angle_degrees Target absolute position in degrees.
-     * @param profile Control parameters (PID gains, limits).
+     * @param profile Control parameters (max velocity, acceleration, etc.).
      * @param timeout_ms Maximum time to wait for reaching the target.
      * @return MotorError::Ok on success, or error code.
      */
@@ -121,6 +151,13 @@ public:
      * @return MotorError::Ok on success.
      */
     MotorError getTelemetry(Telemetry& telemetry);
+
+    /**
+     * @brief Optimized telemetry fetch for control loops. Only reads position data.
+     * @param[out] angle_deg Filled with multi-turn angle in degrees.
+     * @return MotorError::Ok on success.
+     */
+    MotorError getPositionFeedback(double& angle_deg);
 
     /**
      * @brief Checks if the motor has an active fault condition.
@@ -139,12 +176,17 @@ public:
 
 private:
     uint8_t device_address_;
-    std::unique_ptr<SteadywinProtocol> protocol_;
-    std::recursive_mutex bus_mutex_;
+    std::shared_ptr<SteadywinProtocol> protocol_;
+    std::recursive_mutex& bus_mutex_;
 
     // --- State variables ---
     bool is_initialized_{false};
     Telemetry last_telemetry_{};
+
+    // --- Smoothing (EMA filter) variables ---
+    double smoothing_factor_{1.0};
+    double accumulated_target_deg_{0.0};
+    bool target_initialized_{false};
 
     // --- Constants for unit conversion ---
     static constexpr double COUNTS_TO_DEG = 360.0 / 16384.0;

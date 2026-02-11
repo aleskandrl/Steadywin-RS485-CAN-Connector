@@ -16,6 +16,12 @@ This document describes the process of configuring and using the software for co
 
 The program can be run via the compiled executable or via a Python script (for testing).
 
+> [!IMPORTANT]
+> **Current status:** `telemetry_6motors_app` is the most up-to-date application in this repository.
+>
+> [!CAUTION]
+> **Use at your own risk** on real hardware. Always keep external E-stop and mechanical safety measures active.
+
 ### Using the GUI (steadywin_connector)
 
 1.  Run `steadywin_connector.exe`.
@@ -24,6 +30,24 @@ The program can be run via the compiled executable or via a Python script (for t
     *   For RS485: COM port and baud rate (usually 115200).
     *   For CAN: Channel number or device ID.
 4.  Click **Connect**. Upon successful connection, the indicator will turn green.
+
+### Using `telemetry_6motors_app` (recommended)
+
+1. Run `build\telemetry_6motors_app.exe`.
+2. Select interface (**RS485** or **CAN**) and choose port/device.
+3. Wait until startup safety pre-check is done (pre-arm disable sweep).
+4. Select mode (`Position`).
+5. Confirm **ARM and continue** to allow runtime control.
+6. Enable required axis only (`E`) and then command movement.
+
+Safety-related runtime behavior in `telemetry_6motors_app`:
+
+- Pre-arm disable sweep on startup (CAN/RS485, address range default `1..20`).
+- Mandatory ARM step before control loop.
+- Hard command gate: commands are applied only for `armed + enabled` axis.
+- `M` (sine toggle) works only for enabled axis.
+- `F` (disable) immediately clears sine command stream for active axis.
+- UI shows `Armed` and `CmdGate` indicators.
 
 ## ⚙️ Core Functions
 

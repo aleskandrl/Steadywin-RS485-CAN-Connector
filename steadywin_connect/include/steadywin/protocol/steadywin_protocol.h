@@ -34,6 +34,15 @@ public:
     virtual MotorError setAbsolutePositionControl(uint8_t device_address, int32_t absolute_position_counts, RealtimeDataPayload& response_data) = 0;
 
     /**
+     * @brief Sets absolute position control mode WITHOUT waiting for a response.
+     * Use this for high-frequency control loops.
+     * @param device_address The address of the slave device.
+     * @param absolute_position_counts Target position in encoder counts.
+     * @return MotorError::Ok on success (sent), or error if transmit failed.
+     */
+    virtual MotorError setAbsolutePositionControlNoResponse(uint8_t device_address, int32_t absolute_position_counts) = 0;
+
+    /**
      * @brief Disables the motor output (freewheel).
      * @param device_address The address of the slave device.
      * @param[out] response_data The telemetry data received in the response.

@@ -138,7 +138,18 @@ MotorError SteadywinProtocolRS485::setAbsolutePositionControl(uint8_t device_add
     }
 
     std::memcpy(&response_data, response_payload.data(), sizeof(RealtimeDataPayload));
+    std::memcpy(&response_data, response_payload.data(), sizeof(RealtimeDataPayload));
     return MotorError::Ok;
+}
+
+MotorError SteadywinProtocolRS485::setAbsolutePositionControlNoResponse(uint8_t device_address, int32_t absolute_position_counts) {
+    // RS485 is half-duplex and sensitive to collisions.
+    // Unless the protocol supports a specific "do not reply" flag, the device WILL reply.
+    // If we don't wait for it, the next command colliding with the reply will cause a bus error.
+    // Therefore, for RS485, we MUST wait for the response even if the user requested "NoResponse".
+    // This safely satisfies the interface without breaking the bus.
+    RealtimeDataPayload dummy_response;
+    return setAbsolutePositionControl(device_address, absolute_position_counts, dummy_response);
 }
 
 MotorError SteadywinProtocolRS485::disableMotor(uint8_t device_address, RealtimeDataPayload& response_data) {

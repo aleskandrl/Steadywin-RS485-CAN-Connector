@@ -9,7 +9,7 @@
 
 ![Interface](docs/program%20interface.png)
 
-## Architecture
+## 🏗 Architecture
 
 The project is organized into the `steadywin_connect` directory, structured by layers:
 
@@ -35,14 +35,14 @@ All public header files are located here.
 
 ---
 
-## Documentation
+## 📖 Documentation
 
 *   [**User Manual**](docs/usage_manual.md) - Detailed guide on how to use the software and hardware connection.
 *   [CAN Protocol](docs/CAN_steadywin_protocol_v302.md) - Official CAN protocol specification.
 
 ---
 
-## Getting Started
+## 🚀 Getting Started
 
 ### Prerequisites
 *   Windows 10/11
@@ -57,20 +57,75 @@ cmake ..
 cmake --build . --config Release
 ```
 
+### Run Apps
+
+- ⚠️ **Current status:** `telemetry_6motors_app` is the most up-to-date application in this repository.
+  
+  **Use at your own risk** on real hardware. Always keep external E-stop and mechanical safety measures active.
+
+- Main example app:
+```bash
+build\example_app.exe
+```
+
+- Telemetry + 6 motors control UI:
+```bash
+build\telemetry_6motors_app.exe
+```
+
 ### Usage (C++)
 ```cpp
-// For RS485
+// Recommended flow: use MotorManager, then get motor instances.
 auto port = std::make_shared<WindowsSerialPort>();
 port->open("COM3", 115200);
-auto protocol = std::make_unique<SteadywinProtocolRS485>(port);
-SteadywinMotor motor(1, std::move(protocol));
-motor.initialize();
-motor.moveTo(90.0);
 
-// For CAN
-// auto port = std::make_shared<YourCanPortImplementation>();
-// auto protocol = std::make_unique<SteadywinProtocolCAN>(port);
-// SteadywinMotor motor(1, std::move(protocol));
+steadywin::MotorManager manager(port);
+auto ids = manager.scanBus(10);
+if (!ids.empty()) {
+    auto motor = manager.getMotor(ids.front());
+    if (motor) {
+        motor->moveTo(90.0);
+    }
+}
 ```
 
 ---
+
+## 🛡 Safety Behavior (telemetry_6motors_app)
+
+`telemetry_6motors_app` includes startup and runtime safety gates to reduce unintended motion risk:
+
+1. **Pre-arm disable sweep (CAN/RS485)**
+   - Right after opening the port, app sends `disable` over address range (default `1..20`) before mode selection.
+
+2. **Mandatory ARM step**
+   - After scan and initial disable handshake, user must explicitly choose:
+     - `ARM and continue`
+     - or `Abort (safe exit)`
+
+3. **Hard runtime command gate**
+   - Commands are allowed only when:
+     - app is armed, and
+     - axis is explicitly enabled.
+   - If axis is not allowed, it is forced to `Disabled/RequestDisable` and sine command stream is dropped.
+
+4. **Sine safety rules**
+   - `M` (toggle sine) works only for enabled axis.
+   - `F` (disable active axis) immediately clears sine on that axis.
+
+5. **UI safety indicators**
+   - `Armed:Y/N`
+   - `CmdGate:Y/N` for active axis
+
+### Recommended Safe Startup Sequence
+
+1. Ensure external E-stop is available.
+2. Start `telemetry_6motors_app`.
+3. Select transport (CAN/RS485) and wait for pre-arm disable sweep.
+4. Select mode.
+5. Confirm `ARM and continue`.
+6. Enable only required axis with `E`.
+7. Start motion commands (`A/D` or `M` for sine) only after enable.
+
+
+

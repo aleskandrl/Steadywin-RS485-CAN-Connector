@@ -20,6 +20,7 @@ public:
 
     MotorError readRealtimeData(uint8_t device_address, RealtimeDataPayload& data) override;
     MotorError setAbsolutePositionControl(uint8_t device_address, int32_t absolute_position_counts, RealtimeDataPayload& response_data) override;
+    MotorError setAbsolutePositionControlNoResponse(uint8_t device_address, int32_t absolute_position_counts) override;
     MotorError disableMotor(uint8_t device_address, RealtimeDataPayload& response_data) override;
     MotorError clearFaults(uint8_t device_address, uint8_t& current_faults) override;
     MotorError readMultiTurnAngle(uint8_t device_address, int32_t& angle_counts) override;

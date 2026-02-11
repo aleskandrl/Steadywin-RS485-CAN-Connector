@@ -2,6 +2,7 @@
 
 #include "steadywin/protocol/motor_error.h"
 #include "steadywin/protocol/steadywin_protocol.h"
+#include "steadywin/protocol/steadywin_protocol_can.h"
 #include "steadywin/protocol/steadywin_types.h"
 #include <cstdint>
 #include <memory>
@@ -29,6 +30,12 @@ public:
      * @param bus_mutex A reference to the global bus mutex (owned by MotorManager).
      */
     SteadywinMotor(uint8_t device_address, std::shared_ptr<SteadywinProtocol> protocol, std::recursive_mutex& bus_mutex);
+
+    /**
+     * @brief Drains any pending bytes/frames from the underlying transport buffer.
+     * Useful during startup/shutdown safety handshakes to avoid stale replies.
+     */
+    void drainBuffer();
 
     /**
      * @brief Initializes communication with the motor.
@@ -61,6 +68,14 @@ public:
      * @return MotorError::Ok on success, or an error code on failure.
      */
     MotorError moveTo(double angle_degrees);
+
+    /**
+     * @brief Sends a target position command WITHOUT waiting for a response/confirmation.
+     * Extremely fast operation (just writes to bus buffer).
+     * @param angle_degrees Target absolute angle in degrees.
+     * @return MotorError::Ok on success.
+     */
+    MotorError moveToNoWait(double angle_degrees);
 
     /**
      * @brief [0x23] Relative move by angle.
@@ -143,6 +158,31 @@ public:
      */
     MotorError moveToWithProfile(double angle_degrees, const VelocityControlProfile& profile, unsigned int timeout_ms);
 
+    // --- MIT Motion Control ---
+
+    /**
+     * @brief Configures limits for MIT Motion Control mode.
+     * @param p_max Max Position (rad). Default 95.5.
+     * @param v_max Max Velocity (rad/s). Default 45.0.
+     * @param t_max Max Torque (Nm). Default 18.0.
+     */
+    MotorError setMitLimits(float p_max, float v_max, float t_max);
+
+    /**
+     * @brief Sends a real-time MIT Motion Control command.
+     * Motor must be capable of receiving this command (no special mode switch needed for first command,
+     * but limits should be set beforehand if defaults are not suitable).
+     * 
+     * @param p_des Target Position (rad)
+     * @param v_des Target Velocity (rad/s)
+     * @param kp Position Gain (0-500)
+     * @param kd Velocity Gain (0-5)
+     * @param t_ff Feedforward Torque (Nm)
+     * @param[out] telemetry Updated telemetry from the response.
+     * @return MotorError::Ok on success.
+     */
+    MotorError sendMitControl(float p_des, float v_des, float kp, float kd, float t_ff, Telemetry& telemetry);
+
     // --- Data Acquisition ---
 
     /**
@@ -174,6 +214,51 @@ public:
      */
     static Telemetry convertPayloadToTelemetry(const RealtimeDataPayload& payload);
 
+    // --- Active Control Loop Methods ---
+
+    /**
+     * @brief Main control loop update. Must be called cyclically (e.g. at 100Hz+).
+     * Handles state interpolation, sine wave generation, protections, and CAN transmission.
+     * @param dt_seconds Time elapsed since last call.
+     */
+    void update(double dt_seconds);
+
+    enum class ControlMode {
+        RequestDisable, // Transition state to ensure disable command is sent
+        Disabled,
+        Hold,           // Active holding (servo on)
+        Position,       // Standard Position Control (Interpolated)
+        Velocity,       // Velocity Control
+        Sinusoid,       // Internal Sine Wave Generator
+        Mit             // MIT Impedance Control
+    };
+
+    /**
+     * @brief Set the desired control mode.
+     */
+    void setControlMode(ControlMode mode);
+    ControlMode getControlMode() const { return control_mode_; }
+
+    /**
+     * @brief Set target for Position or Velocity modes.
+     */
+    void setTargetAngle(double angle_deg) { target_angle_deg_ = angle_deg; }
+    void setTargetVelocity(double vel_rpm) { target_velocity_rpm_ = vel_rpm; }
+
+    struct SineParams {
+        double amplitude_deg = 10.0;
+        double frequency_hz = 0.5;
+        double center_deg = 0.0;
+        double phase_offset_rad = 0.0;
+    };
+    void setSineParams(const SineParams& params) { sine_params_ = params; }
+    SineParams getSineParams() const { return sine_params_; }
+
+    void setProtectionLimits(double min_voltage, double max_temp_c) {
+        min_voltage_limit_ = min_voltage;
+        max_temp_limit_ = max_temp_c;
+    }
+
 private:
     uint8_t device_address_;
     std::shared_ptr<SteadywinProtocol> protocol_;
@@ -182,6 +267,24 @@ private:
     // --- State variables ---
     bool is_initialized_{false};
     Telemetry last_telemetry_{};
+    SteadywinProtocolCAN::MitParams mit_limits_{}; // Default constructed
+
+    // --- Control State ---
+    ControlMode control_mode_{ControlMode::Disabled};
+    ControlMode requested_mode_{ControlMode::Disabled};
+    
+    // Limits & Protections
+    double min_voltage_limit_{10.0}; // Default safe limit
+    double max_temp_limit_{80.0};
+    double pos_speed_limit_rpm_{3000.0};
+
+    // Interpolation / Command Generation
+    double target_angle_deg_{0.0};       // User desired target
+    double current_cmd_angle_{0.0};      // Actual command sent (ramped/interpolated)
+    double target_velocity_rpm_{0.0};
+    
+    SineParams sine_params_;
+    double sine_time_accumulator_{0.0};
 
     // --- Smoothing (EMA filter) variables ---
     double smoothing_factor_{1.0};

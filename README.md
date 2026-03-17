@@ -9,7 +9,7 @@
 
 ![Interface](docs/program%20interface.png)
 
-## 🏗 Architecture
+## Architecture
 
 The project is organized into the `steadywin_connect` directory, structured by layers:
 
@@ -42,7 +42,7 @@ All public header files are located here.
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
 
 ### Prerequisites
 *   Windows 10/11
@@ -59,7 +59,7 @@ cmake --build . --config Release
 
 ### Run Apps
 
-- ⚠️ **Current status:** `telemetry_6motors_app` is the most up-to-date application in this repository.
+-  **Current status:** `telemetry_6motors_app` is the most up-to-date application in this repository.
   
   **Use at your own risk** on real hardware. Always keep external E-stop and mechanical safety measures active.
 
